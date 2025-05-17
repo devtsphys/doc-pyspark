@@ -843,6 +843,660 @@ param_grid = ParamGridBuilder() \
     .addGrid(lr.regParam, [0.1, 0.01]) \
     .addGrid(lr.elasticNetParam, [0.0, 0.5, 1.0]) \
     .build()
+
+# Cross validation
+cv = CrossValidator(
+    estimator=lr,
+    estimatorParamMaps=param_grid,
+    evaluator=evaluator,
+    numFolds=3
+)
+cv_model = cv.fit(train_data)
+cv_predictions = cv_model.transform(test_data)
+best_model = cv_model.bestModel
+
+# Train validation split
+tvs = TrainValidationSplit(
+    estimator=lr,
+    estimatorParamMaps=param_grid,
+    evaluator=evaluator,
+    trainRatio=0.8
+)
+tvs_model = tvs.fit(train_data)
+tvs_predictions = tvs_model.transform(test_data)
 ```
 
+## Streaming
 
+### Creating Streaming DataFrame
+```python
+# From socket source
+socket_stream_df = spark.readStream \
+    .format("socket") \
+    .option("host", "localhost") \
+    .option("port", 9999) \
+    .load()
+
+# From file source
+file_stream_df = spark.readStream \
+    .format("csv") \
+    .schema(schema) \
+    .option("path", "path/to/directory") \
+    .option("maxFilesPerTrigger", 1) \
+    .load()
+
+# From Kafka source
+kafka_stream_df = spark.readStream \
+    .format("kafka") \
+    .option("kafka.bootstrap.servers", "host:port") \
+    .option("subscribe", "topic1,topic2") \
+    .load()
+```
+
+### Processing Streaming Data
+```python
+# Select and process data
+processed_df = stream_df.select(
+    F.col("value").cast("string").alias("data")
+).select(
+    F.json_tuple("data", "name", "age").alias("name", "age")
+)
+
+# Aggregation with streaming data
+agg_df = stream_df.groupBy(
+    F.window(F.col("timestamp"), "10 minutes", "5 minutes"),
+    F.col("category")
+).count()
+```
+
+### Output Modes
+```python
+# Complete mode (output all results)
+query = agg_df.writeStream \
+    .outputMode("complete") \
+    .format("console") \
+    .start()
+
+# Append mode (output only new results)
+query = processed_df.writeStream \
+    .outputMode("append") \
+    .format("parquet") \
+    .option("path", "path/to/output") \
+    .option("checkpointLocation", "path/to/checkpoint") \
+    .start()
+
+# Update mode (output only updated results)
+query = agg_df.writeStream \
+    .outputMode("update") \
+    .format("memory") \
+    .queryName("streaming_table") \
+    .start()
+```
+
+### Streaming Output Sinks
+```python
+# Console sink (for debugging)
+query = df.writeStream \
+    .format("console") \
+    .outputMode("append") \
+    .start()
+
+# File sink
+query = df.writeStream \
+    .format("parquet")  # or "csv", "json", "orc"
+    .option("path", "path/to/output") \
+    .option("checkpointLocation", "path/to/checkpoint") \
+    .outputMode("append") \
+    .start()
+
+# Kafka sink
+query = df.selectExpr("CAST(key AS STRING)", "CAST(value AS STRING)") \
+    .writeStream \
+    .format("kafka") \
+    .option("kafka.bootstrap.servers", "host:port") \
+    .option("topic", "output_topic") \
+    .option("checkpointLocation", "path/to/checkpoint") \
+    .start()
+
+# Memory sink (for interactive queries)
+query = df.writeStream \
+    .format("memory") \
+    .queryName("table_name") \
+    .outputMode("complete") \
+    .start()
+
+# Query the in-memory table
+spark.sql("SELECT * FROM table_name").show()
+```
+
+### Managing Streaming Queries
+```python
+# Wait for query termination
+query.awaitTermination()
+
+# Stop query
+query.stop()
+
+# Get active queries
+active_queries = spark.streams.active
+
+# Get query status
+query_status = query.status
+query_is_active = query.isActive
+
+# Handle streaming errors
+try:
+    query.awaitTermination()
+except StreamingQueryException as e:
+    print(f"Query failed: {e.message}")
+```
+
+## Performance Optimization
+
+### Caching and Persistence
+```python
+# Cache data in memory
+df.cache()
+df.persist()
+
+# Persist with different storage levels
+from pyspark.storagelevel import StorageLevel
+df.persist(StorageLevel.MEMORY_ONLY)
+df.persist(StorageLevel.MEMORY_AND_DISK)
+df.persist(StorageLevel.MEMORY_ONLY_SER)
+df.persist(StorageLevel.DISK_ONLY)
+df.persist(StorageLevel.OFF_HEAP)
+
+# Unpersist data
+df.unpersist()
+```
+
+### Partition Management
+```python
+# Check current number of partitions
+df.rdd.getNumPartitions()
+
+# Repartition data (full shuffle)
+df_repart = df.repartition(10)
+df_repart = df.repartition("department")  # by column
+df_repart = df.repartition(10, "department")  # by column with num partitions
+
+# Coalesce data (minimizes shuffling, reduces partitions)
+df_coalesce = df.coalesce(5)
+```
+
+### Broadcast Variables
+```python
+# Create broadcast variable
+broadcast_var = sc.broadcast([1, 2, 3])
+
+# Access broadcast variable
+broadcast_var.value
+
+# Using broadcast hint for small DataFrames in joins
+from pyspark.sql.functions import broadcast
+df_result = df_large.join(broadcast(df_small), "key")
+```
+
+### Accumulator Variables
+```python
+# Create accumulator
+accum = sc.accumulator(0)
+
+# Update in operations
+def add_to_accum(x):
+    global accum
+    accum += x
+    return x
+
+rdd.foreach(add_to_accum)
+
+# Get accumulator value
+accum.value
+```
+
+### Execution Plan
+```python
+# Get execution plan
+df.explain()  # Simplified plan
+df.explain(True)  # Detailed plan
+df.explain("formatted")  # Formatted plan
+```
+
+### Configuration Tuning
+```python
+# Memory management
+spark.conf.set("spark.memory.fraction", "0.8")
+spark.conf.set("spark.memory.storageFraction", "0.5")
+
+# Shuffle performance
+spark.conf.set("spark.sql.shuffle.partitions", "200")
+spark.conf.set("spark.default.parallelism", "200")
+
+# Serialization
+spark.conf.set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
+spark.conf.set("spark.kryo.registrationRequired", "false")
+
+# Dynamic allocation
+spark.conf.set("spark.dynamicAllocation.enabled", "true")
+spark.conf.set("spark.dynamicAllocation.minExecutors", "1")
+spark.conf.set("spark.dynamicAllocation.maxExecutors", "10")
+
+# Adaptive query execution
+spark.conf.set("spark.sql.adaptive.enabled", "true")
+```
+
+## Snowflake Integration
+
+### Setting Up Snowflake Connection
+```python
+# Create SparkSession with Snowflake support
+spark = SparkSession.builder \
+    .appName("Snowflake Integration") \
+    .config("spark.jars.packages", "net.snowflake:snowflake-jdbc:3.13.14,net.snowflake:spark-snowflake_2.12:2.10.0-spark_3.1") \
+    .getOrCreate()
+
+# Snowflake connection parameters
+sf_options = {
+    "sfURL": "account.snowflakecomputing.com",
+    "sfUser": "username",
+    "sfPassword": "password",
+    "sfDatabase": "database",
+    "sfSchema": "schema",
+    "sfWarehouse": "warehouse",
+    "sfRole": "role"
+}
+
+# Alternative with key authentication
+sf_options_with_key = {
+    "sfURL": "account.snowflakecomputing.com",
+    "sfUser": "username",
+    "pem_private_key": "path/to/private/key.p8",
+    "sfDatabase": "database",
+    "sfSchema": "schema",
+    "sfWarehouse": "warehouse",
+    "sfRole": "role"
+}
+```
+
+### Reading from Snowflake
+```python
+# Read from Snowflake table
+df = spark.read \
+    .format("net.snowflake.spark.snowflake") \
+    .options(**sf_options) \
+    .option("dbtable", "schema.table_name") \
+    .load()
+
+# Read with query
+df = spark.read \
+    .format("net.snowflake.spark.snowflake") \
+    .options(**sf_options) \
+    .option("query", "SELECT * FROM schema.table_name WHERE column = 'value'") \
+    .load()
+
+# Read with auto-pushdown
+df = spark.read \
+    .format("net.snowflake.spark.snowflake") \
+    .options(**sf_options) \
+    .option("dbtable", "schema.table_name") \
+    .option("autopushdown", "true") \
+    .load() \
+    .filter(F.col("date") >= "2023-01-01") \
+    .select("id", "name", "value")
+```
+
+### Writing to Snowflake
+```python
+# Write to Snowflake table
+df.write \
+    .format("net.snowflake.spark.snowflake") \
+    .options(**sf_options) \
+    .option("dbtable", "schema.table_name") \
+    .mode("append") \
+    .save()
+
+# Write with additional options
+df.write \
+    .format("net.snowflake.spark.snowflake") \
+    .options(**sf_options) \
+    .option("dbtable", "schema.table_name") \
+    .option("truncate_table", "true") \
+    .option("usestagingtable", "false") \
+    .mode("overwrite") \
+    .save()
+```
+
+### Performance Optimizations for Snowflake
+```python
+# Configure partition size for better parallelism
+df.write \
+    .format("net.snowflake.spark.snowflake") \
+    .options(**sf_options) \
+    .option("dbtable", "schema.table_name") \
+    .option("partition_size_in_mb", "128") \
+    .option("parallelism", "8") \
+    .mode("append") \
+    .save()
+
+# Use internal staging area
+df.write \
+    .format("net.snowflake.spark.snowflake") \
+    .options(**sf_options) \
+    .option("dbtable", "schema.table_name") \
+    .option("sfCompress", "true") \
+    .option("use_internal_stage", "true") \
+    .mode("append") \
+    .save()
+
+# Configure column mapping
+df.write \
+    .format("net.snowflake.spark.snowflake") \
+    .options(**sf_options) \
+    .option("dbtable", "schema.table_name") \
+    .option("column_mapping", "name") \
+    .mode("append") \
+    .save()
+```
+
+### Temporary Tables and Views
+```python
+# Create temporary view from Snowflake query
+spark.read \
+    .format("net.snowflake.spark.snowflake") \
+    .options(**sf_options) \
+    .option("query", "SELECT * FROM schema.table_name") \
+    .load() \
+    .createOrReplaceTempView("temp_view")
+
+# Use in Spark SQL
+result_df = spark.sql("SELECT * FROM temp_view WHERE value > 100")
+
+# Write back to Snowflake
+result_df.write \
+    .format("net.snowflake.spark.snowflake") \
+    .options(**sf_options) \
+    .option("dbtable", "schema.results_table") \
+    .mode("overwrite") \
+    .save()
+```
+
+# PySpark Functions Overview
+
+This comprehensive reference table covers the most commonly used PySpark functions across different categories, along with examples and use cases.
+
+## Table of Contents
+- [DataFrame Creation and I/O](#dataframe-creation-and-io)
+- [DataFrame Transformation](#dataframe-transformation)
+- [Column Operations](#column-operations)
+- [Aggregation Functions](#aggregation-functions)
+- [Window Functions](#window-functions)
+- [String Functions](#string-functions)
+- [Date/Time Functions](#datetime-functions)
+- [Mathematical Functions](#mathematical-functions)
+- [Collection Functions](#collection-functions)
+- [UDFs (User-Defined Functions)](#udfs-user-defined-functions)
+- [ML Pipeline Components](#ml-pipeline-components)
+
+## DataFrame Creation and I/O
+
+| Function | Description | Example |
+|----------|-------------|---------|
+| `spark.read.format()` | Loads data from various file formats | `df = spark.read.format("csv").option("header", "true").load("data.csv")` |
+| `spark.createDataFrame()` | Creates a DataFrame from Python objects | `df = spark.createDataFrame([("John", 30), ("Alice", 25)], ["name", "age"])` |
+| `df.write.format()` | Writes DataFrame to various formats | `df.write.format("parquet").save("output.parquet")` |
+| `spark.sql()` | Executes SQL queries | `df = spark.sql("SELECT * FROM employees WHERE age > 30")` |
+| `spark.table()` | References a table in the catalog | `df = spark.table("employees")` |
+| `df.createOrReplaceTempView()` | Creates a temp view of DataFrame | `df.createOrReplaceTempView("employees")` |
+| `spark.read.json()` | Reads JSON files | `df = spark.read.json("data.json")` |
+| `spark.read.parquet()` | Reads Parquet files | `df = spark.read.parquet("data.parquet")` |
+
+## DataFrame Transformation
+
+| Function | Description | Example |
+|----------|-------------|---------|
+| `df.select()` | Selects columns from DataFrame | `df.select("name", "age")` |
+| `df.filter()` | Filters rows based on condition | `df.filter(df.age > 30)` |
+| `df.where()` | Alias for filter | `df.where("age > 30")` |
+| `df.groupBy()` | Groups DataFrame by columns | `df.groupBy("department").count()` |
+| `df.join()` | Joins two DataFrames | `df1.join(df2, df1.id == df2.id, "inner")` |
+| `df.unionByName()` | Combines rows with matching columns | `df1.unionByName(df2, allowMissingColumns=True)` |
+| `df.withColumn()` | Adds or replaces a column | `df.withColumn("doubled_salary", df.salary * 2)` |
+| `df.withColumnRenamed()` | Renames a column | `df.withColumnRenamed("salary", "annual_pay")` |
+| `df.drop()` | Drops a column | `df.drop("temp_column")` |
+| `df.distinct()` | Returns distinct rows | `df.select("department").distinct()` |
+| `df.sort()` | Sorts DataFrame by columns | `df.sort(df.age.desc(), "name")` |
+| `df.orderBy()` | Alias for sort | `df.orderBy(["age", "name"], ascending=[False, True])` |
+| `df.limit()` | Limits number of rows | `df.limit(10)` | 
+| `df.sample()` | Samples fraction of rows | `df.sample(fraction=0.1, seed=42)` |
+| `df.randomSplit()` | Splits into multiple DFs | `train, test = df.randomSplit([0.8, 0.2], seed=42)` |
+| `df.describe()` | Basic statistics of numeric columns | `df.describe().show()` |
+| `df.dropDuplicates()` | Removes duplicate rows | `df.dropDuplicates(["name", "department"])` |
+| `df.dropna()` | Drops rows with null values | `df.dropna(subset=["name", "age"])` |
+| `df.fillna()` | Replaces null values | `df.fillna({"age": 0, "name": "Unknown"})` |
+| `df.replace()` | Replaces values in columns | `df.replace([0], [None], subset=["age"])` |
+| `df.crosstab()` | Creates contingency table | `df.crosstab("gender", "department")` |
+| `df.cube()` | Creates cube for aggregation | `df.cube("department", "gender").count()` |
+| `df.rollup()` | Creates rollup for aggregation | `df.rollup("department", "gender").count()` |
+| `df.pivot()` | Pivots DataFrame | `df.groupBy("date").pivot("category").count()` |
+| `df.agg()` | Performs aggregations | `df.groupBy("department").agg({"salary": "avg", "age": "max"})` |
+
+## Column Operations
+
+| Function | Description | Example |
+|----------|-------------|---------|
+| `col()` | References a column | `from pyspark.sql.functions import col; df.select(col("name"))` |
+| `expr()` | Evaluates SQL expression | `from pyspark.sql.functions import expr; df.select(expr("salary * 1.1"))` |
+| `lit()` | Creates a column with literal value | `from pyspark.sql.functions import lit; df.select(df.name, lit(1).alias("constant"))` |
+| `alias()` | Renames column | `df.select(df.name.alias("full_name"))` |
+| `isNull()` | Checks if column is null | `df.filter(df.name.isNull())` |
+| `isNotNull()` | Checks if column is not null | `df.filter(df.name.isNotNull())` |
+| `isin()` | Checks if value is in list | `df.filter(df.department.isin("HR", "Sales"))` |
+| `cast()` | Converts column type | `df.select(df.age.cast("string"))` |
+| `between()` | Checks if value is in range | `df.filter(df.age.between(20, 30))` |
+| `when()` | Conditional expressions | `from pyspark.sql.functions import when; df.select(when(df.age > 30, "Senior").otherwise("Junior").alias("level"))` |
+| `otherwise()` | Complement to when | *(see when example above)* |
+| `asc()` | Sorts ascending | `df.sort(df.age.asc())` |
+| `desc()` | Sorts descending | `df.sort(df.age.desc())` |
+| `startswith()` | Checks string prefix | `df.filter(df.name.startswith("A"))` |
+| `endswith()` | Checks string suffix | `df.filter(df.name.endswith("son"))` |
+| `contains()` | Checks substring presence | `df.filter(df.name.contains("John"))` |
+| `like()` | SQL LIKE pattern matching | `df.filter(df.name.like("%John%"))` |
+| `rlike()` | Regex pattern matching | `df.filter(df.name.rlike("^[A-Z].*"))` |
+
+## Aggregation Functions
+
+| Function | Description | Example |
+|----------|-------------|---------|
+| `count()` | Counts rows | `from pyspark.sql.functions import count; df.select(count("*"))` |
+| `countDistinct()` | Counts distinct values | `from pyspark.sql.functions import countDistinct; df.select(countDistinct("department"))` |
+| `approx_count_distinct()` | Approximates distinct count | `from pyspark.sql.functions import approx_count_distinct; df.select(approx_count_distinct("email", 0.05))` |
+| `sum()` | Calculates sum | `from pyspark.sql.functions import sum; df.groupBy("department").agg(sum("salary"))` |
+| `avg()` | Calculates average | `from pyspark.sql.functions import avg; df.groupBy("department").agg(avg("salary"))` |
+| `mean()` | Alias for avg | `from pyspark.sql.functions import mean; df.groupBy("department").agg(mean("salary"))` |
+| `min()` | Finds minimum value | `from pyspark.sql.functions import min; df.groupBy("department").agg(min("salary"))` |
+| `max()` | Finds maximum value | `from pyspark.sql.functions import max; df.groupBy("department").agg(max("salary"))` |
+| `first()` | Gets first value | `from pyspark.sql.functions import first; df.groupBy("department").agg(first("name"))` |
+| `last()` | Gets last value | `from pyspark.sql.functions import last; df.groupBy("department").agg(last("name"))` |
+| `corr()` | Calculates correlation | `from pyspark.sql.functions import corr; df.select(corr("height", "weight"))` |
+| `covar_pop()` | Population covariance | `from pyspark.sql.functions import covar_pop; df.select(covar_pop("height", "weight"))` |
+| `covar_samp()` | Sample covariance | `from pyspark.sql.functions import covar_samp; df.select(covar_samp("height", "weight"))` |
+| `kurtosis()` | Calculates kurtosis | `from pyspark.sql.functions import kurtosis; df.select(kurtosis("height"))` |
+| `skewness()` | Calculates skewness | `from pyspark.sql.functions import skewness; df.select(skewness("height"))` |
+| `stddev()` | Calculates standard deviation | `from pyspark.sql.functions import stddev; df.select(stddev("salary"))` |
+| `stddev_pop()` | Population std deviation | `from pyspark.sql.functions import stddev_pop; df.select(stddev_pop("salary"))` |
+| `stddev_samp()` | Sample std deviation | `from pyspark.sql.functions import stddev_samp; df.select(stddev_samp("salary"))` |
+| `variance()` | Calculates variance | `from pyspark.sql.functions import variance; df.select(variance("salary"))` |
+| `var_pop()` | Population variance | `from pyspark.sql.functions import var_pop; df.select(var_pop("salary"))` |
+| `var_samp()` | Sample variance | `from pyspark.sql.functions import var_samp; df.select(var_samp("salary"))` |
+| `collect_list()` | Collects values into list | `from pyspark.sql.functions import collect_list; df.groupBy("department").agg(collect_list("name"))` |
+| `collect_set()` | Collects unique values into set | `from pyspark.sql.functions import collect_set; df.groupBy("department").agg(collect_set("name"))` |
+
+## Window Functions
+
+| Function | Description | Example |
+|----------|-------------|---------|
+| `Window.partitionBy()` | Defines window partitioning | `from pyspark.sql.window import Window; window = Window.partitionBy("department")` |
+| `Window.orderBy()` | Defines window ordering | `window = Window.partitionBy("department").orderBy("salary")` |
+| `Window.rowsBetween()` | Defines row frame | `window = Window.orderBy("date").rowsBetween(-2, 0)` |
+| `Window.rangeBetween()` | Defines range frame | `window = Window.orderBy("date").rangeBetween(-2, 0)` |
+| `rank()` | Assigns rank | `from pyspark.sql.functions import rank; df.withColumn("rank", rank().over(window))` |
+| `dense_rank()` | Assigns dense rank | `from pyspark.sql.functions import dense_rank; df.withColumn("dense_rank", dense_rank().over(window))` |
+| `row_number()` | Assigns row number | `from pyspark.sql.functions import row_number; df.withColumn("row_number", row_number().over(window))` |
+| `ntile()` | Assigns ntile | `from pyspark.sql.functions import ntile; df.withColumn("quartile", ntile(4).over(window))` |
+| `cume_dist()` | Calculates cumulative distribution | `from pyspark.sql.functions import cume_dist; df.withColumn("cume_dist", cume_dist().over(window))` |
+| `percent_rank()` | Calculates percent rank | `from pyspark.sql.functions import percent_rank; df.withColumn("percent_rank", percent_rank().over(window))` |
+| `lag()` | Accesses previous row value | `from pyspark.sql.functions import lag; df.withColumn("prev_salary", lag("salary", 1).over(window))` |
+| `lead()` | Accesses next row value | `from pyspark.sql.functions import lead; df.withColumn("next_salary", lead("salary", 1).over(window))` |
+
+## String Functions
+
+| Function | Description | Example |
+|----------|-------------|---------|
+| `concat()` | Concatenates strings | `from pyspark.sql.functions import concat; df.select(concat(df.first_name, lit(" "), df.last_name))` |
+| `concat_ws()` | Concatenates with separator | `from pyspark.sql.functions import concat_ws; df.select(concat_ws(" ", df.first_name, df.last_name))` |
+| `upper()` | Converts to uppercase | `from pyspark.sql.functions import upper; df.select(upper(df.name))` |
+| `lower()` | Converts to lowercase | `from pyspark.sql.functions import lower; df.select(lower(df.name))` |
+| `trim()` | Removes whitespace | `from pyspark.sql.functions import trim; df.select(trim(df.name))` |
+| `ltrim()` | Removes leading whitespace | `from pyspark.sql.functions import ltrim; df.select(ltrim(df.name))` |
+| `rtrim()` | Removes trailing whitespace | `from pyspark.sql.functions import rtrim; df.select(rtrim(df.name))` |
+| `lpad()` | Left pads string | `from pyspark.sql.functions import lpad; df.select(lpad(df.id, 5, "0"))` |
+| `rpad()` | Right pads string | `from pyspark.sql.functions import rpad; df.select(rpad(df.id, 5, "0"))` |
+| `length()` | Returns string length | `from pyspark.sql.functions import length; df.select(length(df.name))` |
+| `regexp_replace()` | Replaces regex matches | `from pyspark.sql.functions import regexp_replace; df.select(regexp_replace(df.phone, "[()-]", ""))` |
+| `regexp_extract()` | Extracts regex matches | `from pyspark.sql.functions import regexp_extract; df.select(regexp_extract(df.email, "([^@]+)", 1))` |
+| `split()` | Splits string into array | `from pyspark.sql.functions import split; df.select(split(df.tags, ","))` |
+| `substring()` | Extracts substring | `from pyspark.sql.functions import substring; df.select(substring(df.name, 1, 3))` |
+| `initcap()` | Capitalizes first letter | `from pyspark.sql.functions import initcap; df.select(initcap(df.name))` |
+| `soundex()` | Calculates soundex code | `from pyspark.sql.functions import soundex; df.select(soundex(df.name))` |
+| `levenshtein()` | Calculates edit distance | `from pyspark.sql.functions import levenshtein; df.select(levenshtein(df.name1, df.name2))` |
+| `translate()` | Replaces characters | `from pyspark.sql.functions import translate; df.select(translate(df.name, "AEIOU", "12345"))` |
+
+## Date/Time Functions
+
+| Function | Description | Example |
+|----------|-------------|---------|
+| `current_date()` | Gets current date | `from pyspark.sql.functions import current_date; df.withColumn("today", current_date())` |
+| `current_timestamp()` | Gets current timestamp | `from pyspark.sql.functions import current_timestamp; df.withColumn("now", current_timestamp())` |
+| `date_format()` | Formats date | `from pyspark.sql.functions import date_format; df.select(date_format(df.date, "yyyy-MM-dd"))` |
+| `to_date()` | Converts to date | `from pyspark.sql.functions import to_date; df.withColumn("date", to_date(df.date_str, "yyyy-MM-dd"))` |
+| `to_timestamp()` | Converts to timestamp | `from pyspark.sql.functions import to_timestamp; df.withColumn("ts", to_timestamp(df.ts_str, "yyyy-MM-dd HH:mm:ss"))` |
+| `from_unixtime()` | Converts unix timestamp | `from pyspark.sql.functions import from_unixtime; df.select(from_unixtime(df.epoch))` |
+| `unix_timestamp()` | Converts to unix timestamp | `from pyspark.sql.functions import unix_timestamp; df.select(unix_timestamp(df.date))` |
+| `datediff()` | Calculates date difference | `from pyspark.sql.functions import datediff; df.select(datediff(df.end_date, df.start_date))` |
+| `add_months()` | Adds months to date | `from pyspark.sql.functions import add_months; df.select(add_months(df.date, 3))` |
+| `months_between()` | Calculates months between | `from pyspark.sql.functions import months_between; df.select(months_between(df.end_date, df.start_date))` |
+| `date_add()` | Adds days to date | `from pyspark.sql.functions import date_add; df.select(date_add(df.date, 7))` |
+| `date_sub()` | Subtracts days from date | `from pyspark.sql.functions import date_sub; df.select(date_sub(df.date, 7))` |
+| `year()` | Extracts year | `from pyspark.sql.functions import year; df.select(year(df.date))` |
+| `month()` | Extracts month | `from pyspark.sql.functions import month; df.select(month(df.date))` |
+| `dayofmonth()` | Extracts day of month | `from pyspark.sql.functions import dayofmonth; df.select(dayofmonth(df.date))` |
+| `dayofweek()` | Extracts day of week | `from pyspark.sql.functions import dayofweek; df.select(dayofweek(df.date))` |
+| `dayofyear()` | Extracts day of year | `from pyspark.sql.functions import dayofyear; df.select(dayofyear(df.date))` |
+| `hour()` | Extracts hour | `from pyspark.sql.functions import hour; df.select(hour(df.timestamp))` |
+| `minute()` | Extracts minute | `from pyspark.sql.functions import minute; df.select(minute(df.timestamp))` |
+| `second()` | Extracts second | `from pyspark.sql.functions import second; df.select(second(df.timestamp))` |
+| `weekofyear()` | Extracts week of year | `from pyspark.sql.functions import weekofyear; df.select(weekofyear(df.date))` |
+| `last_day()` | Gets last day of month | `from pyspark.sql.functions import last_day; df.select(last_day(df.date))` |
+| `next_day()` | Gets next day of week | `from pyspark.sql.functions import next_day; df.select(next_day(df.date, "Sunday"))` |
+| `quarter()` | Extracts quarter | `from pyspark.sql.functions import quarter; df.select(quarter(df.date))` |
+| `trunc()` | Truncates date | `from pyspark.sql.functions import trunc; df.select(trunc(df.date, "month"))` |
+
+## Mathematical Functions
+
+| Function | Description | Example |
+|----------|-------------|---------|
+| `abs()` | Absolute value | `from pyspark.sql.functions import abs; df.select(abs(df.value))` |
+| `sqrt()` | Square root | `from pyspark.sql.functions import sqrt; df.select(sqrt(df.value))` |
+| `cbrt()` | Cube root | `from pyspark.sql.functions import cbrt; df.select(cbrt(df.value))` |
+| `exp()` | Exponential | `from pyspark.sql.functions import exp; df.select(exp(df.value))` |
+| `log()` | Natural logarithm | `from pyspark.sql.functions import log; df.select(log(df.value))` |
+| `log10()` | Base-10 logarithm | `from pyspark.sql.functions import log10; df.select(log10(df.value))` |
+| `log2()` | Base-2 logarithm | `from pyspark.sql.functions import log2; df.select(log2(df.value))` |
+| `pow()` | Power | `from pyspark.sql.functions import pow; df.select(pow(df.value, 2))` |
+| `round()` | Rounds number | `from pyspark.sql.functions import round; df.select(round(df.value, 2))` |
+| `ceil()` | Ceiling | `from pyspark.sql.functions import ceil; df.select(ceil(df.value))` |
+| `floor()` | Floor | `from pyspark.sql.functions import floor; df.select(floor(df.value))` |
+| `signum()` | Sign | `from pyspark.sql.functions import signum; df.select(signum(df.value))` |
+| `sin()` | Sine | `from pyspark.sql.functions import sin; df.select(sin(df.angle))` |
+| `cos()` | Cosine | `from pyspark.sql.functions import cos; df.select(cos(df.angle))` |
+| `tan()` | Tangent | `from pyspark.sql.functions import tan; df.select(tan(df.angle))` |
+| `asin()` | Arcsine | `from pyspark.sql.functions import asin; df.select(asin(df.value))` |
+| `acos()` | Arccosine | `from pyspark.sql.functions import acos; df.select(acos(df.value))` |
+| `atan()` | Arctangent | `from pyspark.sql.functions import atan; df.select(atan(df.value))` |
+| `degrees()` | Radians to degrees | `from pyspark.sql.functions import degrees; df.select(degrees(df.radians))` |
+| `radians()` | Degrees to radians | `from pyspark.sql.functions import radians; df.select(radians(df.degrees))` |
+| `rand()` | Random number | `from pyspark.sql.functions import rand; df.select(rand())` |
+| `randn()` | Random normal | `from pyspark.sql.functions import randn; df.select(randn())` |
+
+## Collection Functions
+
+| Function | Description | Example |
+|----------|-------------|---------|
+| `array()` | Creates array | `from pyspark.sql.functions import array; df.select(array(df.col1, df.col2, df.col3))` |
+| `array_contains()` | Checks if array contains value | `from pyspark.sql.functions import array_contains; df.filter(array_contains(df.tags, "python"))` |
+| `array_distinct()` | Removes duplicates from array | `from pyspark.sql.functions import array_distinct; df.select(array_distinct(df.tags))` |
+| `array_intersect()` | Intersects arrays | `from pyspark.sql.functions import array_intersect; df.select(array_intersect(df.tags1, df.tags2))` |
+| `array_union()` | Unions arrays | `from pyspark.sql.functions import array_union; df.select(array_union(df.tags1, df.tags2))` |
+| `array_except()` | Array difference | `from pyspark.sql.functions import array_except; df.select(array_except(df.tags1, df.tags2))` |
+| `array_join()` | Joins array elements | `from pyspark.sql.functions import array_join; df.select(array_join(df.tags, ", "))` |
+| `array_max()` | Gets max value in array | `from pyspark.sql.functions import array_max; df.select(array_max(df.values))` |
+| `array_min()` | Gets min value in array | `from pyspark.sql.functions import array_min; df.select(array_min(df.values))` |
+| `array_position()` | Gets element position | `from pyspark.sql.functions import array_position; df.select(array_position(df.tags, "python"))` |
+| `array_remove()` | Removes element from array | `from pyspark.sql.functions import array_remove; df.select(array_remove(df.tags, "java"))` |
+| `array_sort()` | Sorts array | `from pyspark.sql.functions import array_sort; df.select(array_sort(df.values))` |
+| `arrays_overlap()` | Checks if arrays overlap | `from pyspark.sql.functions import arrays_overlap; df.filter(arrays_overlap(df.tags1, df.tags2))` |
+| `arrays_zip()` | Zips arrays | `from pyspark.sql.functions import arrays_zip; df.select(arrays_zip(df.keys, df.values))` |
+| `element_at()` | Gets element at position | `from pyspark.sql.functions import element_at; df.select(element_at(df.tags, 1))` |
+| `explode()` | Explodes array to rows | `from pyspark.sql.functions import explode; df.select(df.name, explode(df.tags))` |
+| `explode_outer()` | Explodes with nulls | `from pyspark.sql.functions import explode_outer; df.select(df.name, explode_outer(df.tags))` |
+| `posexplode()` | Explodes with position | `from pyspark.sql.functions import posexplode; df.select(df.name, posexplode(df.tags))` |
+| `posexplode_outer()` | Explodes with position and nulls | `from pyspark.sql.functions import posexplode_outer; df.select(df.name, posexplode_outer(df.tags))` |
+| `size()` | Gets array size | `from pyspark.sql.functions import size; df.select(size(df.tags))` |
+| `slice()` | Gets array slice | `from pyspark.sql.functions import slice; df.select(slice(df.tags, 1, 2))` |
+| `sort_array()` | Sorts array | `from pyspark.sql.functions import sort_array; df.select(sort_array(df.values))` |
+| `map_keys()` | Gets map keys | `from pyspark.sql.functions import map_keys; df.select(map_keys(df.properties))` |
+| `map_values()` | Gets map values | `from pyspark.sql.functions import map_values; df.select(map_values(df.properties))` |
+| `map_entries()` | Gets map entries | `from pyspark.sql.functions import map_entries; df.select(map_entries(df.properties))` |
+| `map_from_entries()` | Creates map from entries | `from pyspark.sql.functions import map_from_entries; df.select(map_from_entries(df.entries))` |
+| `map_concat()` | Concatenates maps | `from pyspark.sql.functions import map_concat; df.select(map_concat(df.map1, df.map2))` |
+
+## UDFs (User-Defined Functions)
+
+| Function | Description | Example |
+|----------|-------------|---------|
+| `udf()` | Creates a UDF | ```from pyspark.sql.functions import udf
+from pyspark.sql.types import IntegerType
+square = udf(lambda x: x * x, IntegerType())
+df.select(square(df.value))``` |
+| `pandas_udf()` | Creates a Pandas UDF | ```from pyspark.sql.functions import pandas_udf
+from pyspark.sql.types import IntegerType
+import pandas as pd
+
+@pandas_udf(IntegerType())
+def square(x: pd.Series) -> pd.Series:
+    return x * x
+    
+df.select(square(df.value))``` |
+
+## ML Pipeline Components
+
+| Component | Description | Example |
+|-----------|-------------|---------|
+| `VectorAssembler` | Combines features into vector | ```from pyspark.ml.feature import VectorAssembler
+assembler = VectorAssembler(inputCols=["age", "height", "weight"], outputCol="features")
+assembled_df = assembler.transform(df)``` |
+| `StringIndexer` | Encodes string labels | ```from pyspark.ml.feature import StringIndexer
+indexer = StringIndexer(inputCol="category", outputCol="categoryIndex")
+indexed_df = indexer.fit(df).transform(df)``` |
+| `OneHotEncoder` | One-hot encodes categorical features | ```from pyspark.ml.feature import OneHotEncoder
+encoder = OneHotEncoder(inputCols=["categoryIndex"], outputCols=["categoryVec"])
+encoded_df = encoder.fit(indexed_df).transform(indexed_df)``` |
+| `StandardScaler` | Standardizes features | ```from pyspark.ml.feature import StandardScaler
+scaler = StandardScaler(inputCol="features", outputCol="scaledFeatures")
+scaled_df = scaler.fit(df).transform(df)``` |
+| `MinMaxScaler` | Scales features to range | ```from pyspark.ml.feature import MinMaxScaler
+scaler = MinMaxScaler(inputCol="features", outputCol="scaledFeatures", min=0.0, max=1.0)
+scaled_df = scaler.fit(df).transform(df)``` |
+| `PCA` | Dimension reduction | ```from pyspark.ml.feature import PCA
+pca = PCA(k=3, inputCol="features", outputCol="pca
